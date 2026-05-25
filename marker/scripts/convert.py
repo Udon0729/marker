@@ -34,6 +34,7 @@ from marker.logger import configure_logging, get_logger
 from marker.models import create_model_dict
 from marker.output import output_exists, save_output
 from marker.utils.gpu import GPUManager
+from marker.utils.url import download_pdf_to_memory, filename_from_url, is_url
 
 configure_logging()
 logger = get_logger()
@@ -63,6 +64,14 @@ def process_single_pdf(args):
     torch.set_num_threads(cli_options["total_torch_threads"])
     del cli_options["total_torch_threads"]
 
+    fpath_is_url = is_url(fpath)
+
+    # Per-task cli_options copy so the parent dict (shared across workers) is
+    # not mutated when we set source_label_override below.
+    cli_options = dict(cli_options)
+    if fpath_is_url:
+        cli_options["source_label_override"] = filename_from_url(fpath)
+
     config_parser = ConfigParser(cli_options)
 
     out_folder = config_parser.get_output_folder(fpath)
@@ -84,7 +93,13 @@ def process_single_pdf(args):
             renderer=config_parser.get_renderer(),
             llm_service=config_parser.get_llm_service(),
         )
-        rendered = converter(fpath)
+        if fpath_is_url:
+            # Stream into memory inside the worker so the parent process never
+            # holds onto the PDF bytes.
+            converter_input, _ = download_pdf_to_memory(fpath)
+        else:
+            converter_input = fpath
+        rendered = converter(converter_input)
         out_folder = config_parser.get_output_folder(fpath)
         save_output(rendered, out_folder, base_name)
         page_count = converter.page_count
@@ -100,6 +115,39 @@ def process_single_pdf(args):
         gc.collect()
 
     return page_count
+
+
+def _collect_inputs(in_path: str) -> list[str]:
+    """Resolve the CLI input argument into a list of PDF sources.
+
+    Accepts:
+      - directory: every regular file inside it (legacy behavior),
+      - text file: one URL or local path per line (`#` starts a comment, blanks ignored),
+      - bare `-`: URLs read from stdin (one per line).
+    """
+    if in_path == "-":
+        import sys
+
+        return [line.strip() for line in sys.stdin if line.strip() and not line.lstrip().startswith("#")]
+
+    if os.path.isdir(in_path):
+        abs_dir = os.path.abspath(in_path)
+        files = [os.path.join(abs_dir, f) for f in os.listdir(abs_dir)]
+        return [f for f in files if os.path.isfile(f)]
+
+    if os.path.isfile(in_path):
+        with open(in_path, "r", encoding="utf-8") as f:
+            entries = []
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                entries.append(line)
+            return entries
+
+    raise click.BadParameter(
+        f"`in_folder` must be a directory, a text file of URLs/paths, or `-` for stdin; got {in_path!r}"
+    )
 
 
 @click.command(cls=CustomClickPrinter)
@@ -137,10 +185,11 @@ def process_single_pdf(args):
 )
 @ConfigParser.common_options
 def convert_cli(in_folder: str, **kwargs):
+    """`in_folder` may be a directory of local PDFs, a text file listing http(s) URLs
+    (one per line, `#` comments allowed) or local paths, or `-` to read URLs from stdin.
+    URL entries are streamed to memory and never persisted to disk."""
     total_pages = 0
-    in_folder = os.path.abspath(in_folder)
-    files = [os.path.join(in_folder, f) for f in os.listdir(in_folder)]
-    files = [f for f in files if os.path.isfile(f)]
+    files = _collect_inputs(in_folder)
 
     # Handle chunks if we're processing in parallel
     # Ensure we get all files into a chunk

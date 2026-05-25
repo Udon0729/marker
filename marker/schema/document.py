@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Sequence, Optional
+from typing import Any, List, Sequence, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from marker.schema import BlockTypes
 from marker.schema.blocks import Block, BlockId, BlockOutput
@@ -23,11 +23,18 @@ class TocItem(BaseModel):
 
 
 class Document(BaseModel):
+    # Allow arbitrary types so pdf_source can hold an open BytesIO when the
+    # input came from an HTTP(S) URL instead of disk.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     filepath: str
     pages: List[PageGroup]
     block_type: BlockTypes = BlockTypes.Document
     table_of_contents: List[TocItem] | None = None
     debug_data_path: str | None = None  # Path that debug data was saved to
+    # str path on disk, or an in-memory BytesIO / bytes for URL-fed PDFs.
+    # pdftext consumes whatever pypdfium2 can open, so we pass it through.
+    pdf_source: Any = None
 
     def get_block(self, block_id: BlockId):
         page = self.get_page(block_id.page_id)

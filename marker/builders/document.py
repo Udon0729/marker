@@ -50,4 +50,8 @@ class DocumentBuilder(BaseBuilder):
             ) for i, p in enumerate(provider.page_range)
         ]
         DocumentClass: Document = get_block_class(BlockTypes.Document)
-        return DocumentClass(filepath=provider.filepath, pages=initial_pages)
+        return DocumentClass(
+            filepath=provider.source_label,
+            pages=initial_pages,
+            pdf_source=provider.filepath,
+        )

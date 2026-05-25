@@ -12,6 +12,7 @@ from marker.renderers.json import JSONRenderer
 from marker.renderers.markdown import MarkdownRenderer
 from marker.settings import settings
 from marker.util import classes_to_strings, parse_range_str, strings_to_classes
+from marker.utils.url import filename_from_url, is_url
 
 logger = get_logger()
 
@@ -166,11 +167,13 @@ class ConfigParser:
 
     def get_output_folder(self, filepath: str):
         output_dir = self.cli_options.get("output_dir", settings.OUTPUT_DIR)
-        fname_base = os.path.splitext(os.path.basename(filepath))[0]
-        output_dir = os.path.join(output_dir, fname_base)
+        output_dir = os.path.join(output_dir, self.get_base_filename(filepath))
         os.makedirs(output_dir, exist_ok=True)
         return output_dir
 
     def get_base_filename(self, filepath: str):
-        basename = os.path.basename(filepath)
+        if is_url(filepath):
+            basename = filename_from_url(filepath)
+        else:
+            basename = os.path.basename(filepath)
         return os.path.splitext(basename)[0]

@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import List, Optional, Dict
+from typing import Annotated, List, Optional, Dict
 
 from PIL import Image
 from pydantic import BaseModel
@@ -49,9 +49,24 @@ ProviderPageLines = Dict[int, List[ProviderOutput]]
 
 
 class BaseProvider:
+    source_label_override: Annotated[
+        Optional[str],
+        "Display-side filename used for logs, debug paths, and Document.filepath.",
+        "When the provider runs on an in-memory PDF (URL fetch), this lets",
+        "callers preserve the original URL-derived name for downstream output.",
+    ] = None
+
     def __init__(self, filepath: str, config: Optional[BaseModel | dict] = None):
         assign_config(self, config)
         self.filepath = filepath
+
+    @property
+    def source_label(self) -> str:
+        if self.source_label_override:
+            return self.source_label_override
+        if isinstance(self.filepath, str):
+            return self.filepath
+        return "in_memory.pdf"
 
     def __len__(self):
         pass

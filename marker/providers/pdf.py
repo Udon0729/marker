@@ -1,8 +1,9 @@
 import contextlib
 import ctypes
+import io
 import logging
 import re
-from typing import Annotated, Dict, List, Optional, Set
+from typing import Annotated, Dict, List, Optional, Set, Union
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
@@ -81,10 +82,19 @@ class PdfProvider(BaseProvider):
         "Whether to keep character-level information in the output.",
     ] = False
 
-    def __init__(self, filepath: str, config=None):
+    def __init__(
+        self,
+        filepath: Union[str, bytes, io.IOBase],
+        config=None,
+    ):
         super().__init__(filepath, config)
 
         self.filepath = filepath
+        # pdftext spawns workers that pickle `self.filepath`; an open BytesIO
+        # cannot survive that hop, so force a single in-process worker whenever
+        # we are running purely off memory.
+        if not isinstance(filepath, str):
+            self.pdftext_workers = 1
 
         with self.get_doc() as doc:
             self.page_count = len(doc)
@@ -110,6 +120,7 @@ class PdfProvider(BaseProvider):
     def get_doc(self):
         doc = None
         try:
+            self._rewind_stream()
             doc = pdfium.PdfDocument(self.filepath)
 
             # Must be called on the parent pdf, before retrieving pages to render correctly
@@ -120,6 +131,15 @@ class PdfProvider(BaseProvider):
         finally:
             if doc:
                 doc.close()
+
+    def _rewind_stream(self) -> None:
+        """pypdfium2 advances byte-stream cursors as it reads. Seek back to 0 so
+        that the same BytesIO can be reopened later by `get_doc` or pdftext."""
+        if isinstance(self.filepath, io.IOBase):
+            try:
+                self.filepath.seek(0)
+            except (AttributeError, io.UnsupportedOperation):
+                pass
 
     def __len__(self) -> int:
         return self.page_count
@@ -201,6 +221,7 @@ class PdfProvider(BaseProvider):
 
     def pdftext_extraction(self, doc: PdfDocument) -> ProviderPageLines:
         page_lines: ProviderPageLines = {}
+        self._rewind_stream()
         page_char_blocks = dictionary_output(
             self.filepath,
             page_range=self.page_range,

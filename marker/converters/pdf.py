@@ -8,7 +8,6 @@ from collections import defaultdict
 from typing import Annotated, Any, Dict, List, Optional, Type, Tuple, Union
 import io
 from contextlib import contextmanager
-import tempfile
 
 from marker.processors import BaseProcessor
 from marker.services import BaseService
@@ -151,30 +150,42 @@ class PdfConverter(BaseConverter):
         self.page_count = None  # Track how many pages were converted
 
     @contextmanager
-    def filepath_to_str(self, file_input: Union[str, io.BytesIO]):
-        temp_file = None
-        try:
-            if isinstance(file_input, str):
-                yield file_input
-            else:
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".pdf"
-                ) as temp_file:
-                    if isinstance(file_input, io.BytesIO):
-                        file_input.seek(0)
-                        temp_file.write(file_input.getvalue())
-                    else:
-                        raise TypeError(
-                            f"Expected str or BytesIO, got {type(file_input)}"
-                        )
+    def filepath_to_str(self, file_input: Union[str, bytes, io.IOBase]):
+        """Normalize the converter input without ever touching the filesystem.
 
-                yield temp_file.name
-        finally:
-            if temp_file is not None and os.path.exists(temp_file.name):
-                os.unlink(temp_file.name)
+        Strings are passed through. Raw `bytes` are wrapped in `io.BytesIO` so
+        downstream providers always receive a seekable byte stream. Existing
+        BytesIO / BinaryIO inputs are rewound and yielded as-is.
+        """
+        if isinstance(file_input, str):
+            yield file_input
+            return
 
-    def build_document(self, filepath: str) -> Document:
-        provider_cls = provider_from_filepath(filepath)
+        if isinstance(file_input, (bytes, bytearray)):
+            yield io.BytesIO(bytes(file_input))
+            return
+
+        if isinstance(file_input, io.IOBase):
+            try:
+                file_input.seek(0)
+            except (AttributeError, io.UnsupportedOperation):
+                pass
+            yield file_input
+            return
+
+        raise TypeError(
+            f"Expected str, bytes, or a byte stream, got {type(file_input)}"
+        )
+
+    def build_document(self, filepath: Union[str, io.IOBase]) -> Document:
+        if isinstance(filepath, str):
+            provider_cls = provider_from_filepath(filepath)
+        else:
+            # In-memory inputs (BytesIO) skip on-disk type sniffing — the URL
+            # CLI path only feeds PDF bytes here.
+            from marker.providers.pdf import PdfProvider
+
+            provider_cls = PdfProvider
         layout_builder = self.resolve_dependencies(self.layout_builder_class)
         line_builder = self.resolve_dependencies(LineBuilder)
         ocr_builder = self.resolve_dependencies(OcrBuilder)
@@ -190,9 +201,9 @@ class PdfConverter(BaseConverter):
 
         return document
 
-    def __call__(self, filepath: str | io.BytesIO):
-        with self.filepath_to_str(filepath) as temp_path:
-            document = self.build_document(temp_path)
+    def __call__(self, filepath: Union[str, bytes, io.IOBase]):
+        with self.filepath_to_str(filepath) as normalized_input:
+            document = self.build_document(normalized_input)
             self.page_count = len(document.pages)
             renderer = self.resolve_dependencies(self.renderer)
             rendered = renderer(document)

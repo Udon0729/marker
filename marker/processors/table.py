@@ -1,3 +1,4 @@
+import io
 import re
 from collections import defaultdict
 from copy import deepcopy
@@ -83,7 +84,10 @@ class TableProcessor(BaseProcessor):
         self.detection_model = detection_model
 
     def __call__(self, document: Document):
-        filepath = document.filepath  # Path to original pdf file
+        # `pdf_source` is whatever pypdfium2 accepts: a path on disk, raw bytes,
+        # or an open BytesIO when the input came from a URL. Fall back to the
+        # display-side filepath for backwards compatibility.
+        filepath = document.pdf_source if document.pdf_source is not None else document.filepath
 
         table_data = []
         for page in document.pages:
@@ -454,7 +458,7 @@ class TableProcessor(BaseProcessor):
                 assert all("bbox" in t for t in text), "All text lines must have a bbox"
                 table_cells[k].text_lines = text
 
-    def assign_pdftext_lines(self, extract_blocks: list, filepath: str):
+    def assign_pdftext_lines(self, extract_blocks: list, filepath):
         table_inputs = []
         unique_pages = list(set([t["page_id"] for t in extract_blocks]))
         if len(unique_pages) == 0:
@@ -469,11 +473,20 @@ class TableProcessor(BaseProcessor):
                     img_size = block["img_size"]
 
             table_inputs.append({"tables": tables, "img_size": img_size})
+        # In-memory PDFs cannot be shared with pdftext worker subprocesses; pin
+        # to a single worker and rewind the stream before each pdftext read.
+        workers = self.pdftext_workers
+        if isinstance(filepath, io.IOBase):
+            try:
+                filepath.seek(0)
+            except (AttributeError, io.UnsupportedOperation):
+                pass
+            workers = 1
         cell_text = table_output(
             filepath,
             table_inputs,
             page_range=unique_pages,
-            workers=self.pdftext_workers,
+            workers=workers,
         )
         assert len(cell_text) == len(unique_pages), (
             "Number of pages and table inputs must match"
