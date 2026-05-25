@@ -55,11 +55,11 @@ marker_server = "marker.scripts.server:server_cli"
 Repository = "https://github.com/VikParuchuri/marker"
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cpu" }]
+torch = [{ index = "pytorch-cu128" }]
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [dependency-groups]

@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import os
 
@@ -77,11 +79,30 @@ def convert_if_not_rgb(image: Image.Image) -> Image.Image:
     return image
 
 
+def embed_images_as_data_uris(text: str, images: dict) -> str:
+    img_format = settings.OUTPUT_IMAGE_FORMAT
+    mime = f"image/{'jpeg' if img_format.upper() == 'JPG' else img_format.lower()}"
+    for img_name, img in images.items():
+        img = convert_if_not_rgb(img)
+        buf = io.BytesIO()
+        img.save(buf, img_format)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        data_uri = f"data:{mime};base64,{b64}"
+        text = text.replace(f"]({img_name})", f"]({data_uri})")
+        text = text.replace(f'src="{img_name}"', f'src="{data_uri}"')
+        text = text.replace(f"src='{img_name}'", f"src='{data_uri}'")
+    return text
+
+
 def save_output(rendered: BaseModel, output_dir: str, fname_base: str):
     text, ext, images = text_from_rendered(rendered)
     text = text.encode(settings.OUTPUT_ENCODING, errors="replace").decode(
         settings.OUTPUT_ENCODING
     )
+
+    if ext in ("md", "html") and images:
+        text = embed_images_as_data_uris(text, images)
+        images = {}
 
     with open(
         os.path.join(output_dir, f"{fname_base}.{ext}"),
